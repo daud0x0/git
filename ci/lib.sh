@@ -201,7 +201,7 @@ linux-musl)
 	;;
 linux-leaks)
 	CC=gcc
-	setenv --build SANITIZE leak
+	MAKEFLAGS="$MAKEFLAGS SANITIZE=leak"
 	setenv --test GIT_TEST_PASSING_SANITIZE_LEAK true
 	;;
 esac
