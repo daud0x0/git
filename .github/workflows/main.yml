@@ -129,11 +129,7 @@ jobs:
       shell: bash
     - name: test
       shell: bash
-      run: . /etc/profile && make -C t -e
-    - name: ci/print-test-failures.sh
-      if: failure()
-      shell: bash
-      run: ci/print-test-failures.sh
+      run: . /etc/profile && make -C t -e || ci/print-test-failures-github.sh
     - name: Upload failed tests' directories
       if: failure() && env.FAILED_TEST_ARTIFACTS != ''
       uses: actions/upload-artifact@v2
@@ -218,11 +214,7 @@ jobs:
       shell: bash
     - name: test
       shell: bash
-      run: . /etc/profile && make -C t -e
-    - name: ci/print-test-failures.sh
-      if: failure()
-      shell: bash
-      run: ci/print-test-failures.sh
+      run: . /etc/profile && make -C t -e || ci/print-test-failures-github.sh
     - name: Upload failed tests' directories
       if: failure() && env.FAILED_TEST_ARTIFACTS != ''
       uses: actions/upload-artifact@v2
@@ -265,10 +257,8 @@ jobs:
     - run: ci/lib.sh --build
     - run: make
     - run: ci/lib.sh --test
-    - run: make test
+    - run: make test || ci/print-test-failures-github.sh
       if: success()
-    - run: ci/print-test-failures.sh
-      if: failure()
     - name: Upload failed tests' directories
       if: failure() && env.FAILED_TEST_ARTIFACTS != ''
       uses: actions/upload-artifact@v2
@@ -301,10 +291,8 @@ jobs:
     - run: ci/lib.sh --build
     - run: make
     - run: ci/lib.sh --test
-    - run: make test
+    - run: make test || ci/print-test-failures-github.sh
       if: success() && matrix.vector.skip-tests != 'no'
-    - run: ci/print-test-failures.sh
-      if: failure() && matrix.vector.skip-tests != 'no'
     - name: Upload failed tests' directories
       if: failure() && env.FAILED_TEST_ARTIFACTS != ''
       uses: actions/upload-artifact@v1
