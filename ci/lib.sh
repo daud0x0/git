@@ -94,7 +94,7 @@ ubuntu-latest)
 		break
 	fi
 
-	if [ "$jobname" = linux-gcc ]
+	if test "$jobname" = linux-gcc
 	then
 		MAKEFLAGS="$MAKEFLAGS PYTHON_PATH=/usr/bin/python3"
 	else
@@ -104,7 +104,7 @@ ubuntu-latest)
 	setenv --test GIT_TEST_HTTPD true
 	;;
 macos-latest)
-	if [ "$jobname" = osx-gcc ]
+	if test "$jobname" = osx-gcc
 	then
 		MAKEFLAGS="$MAKEFLAGS PYTHON_PATH=$(which python3)"
 	else
