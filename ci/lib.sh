@@ -5,6 +5,13 @@ set -ex
 . ${0%/*}/lib-ci-type.sh
 
 # Starting assertions
+mode=$1
+if test -z "$mode"
+then
+	echo "need a $0 mode, e.g. --build or --test" >&2
+	exit 1
+fi
+
 if test -z "$jobname"
 then
 	echo "must set a CI jobname in the environment" >&2
@@ -16,11 +23,12 @@ setenv () {
 	while test $# != 0
 	do
 		case "$1" in
-		--build)
-			;;
-		--test)
-			;;
-		--all)
+		--build | --test)
+			if test "$1" != "$mode"
+			then
+				return 0
+			fi
+
 			;;
 		-*)
 			echo "BUG: bad setenv() option '$1'" >&2
@@ -46,8 +54,12 @@ setenv () {
 # How many jobs to run in parallel?
 NPROC=10
 
+# For "--test" we carry the MAKEFLAGS over from earlier steps, except
+# in stand-alone jobs which will use $COMMON_MAKEFLAGS.
+COMMON_MAKEFLAGS=--jobs=$NPROC
+
 # Clear MAKEFLAGS that may come from the outside world.
-MAKEFLAGS=--jobs=$NPROC
+MAKEFLAGS=$COMMON_MAKEFLAGS
 
 case "$CI_TYPE" in
 github-actions)
@@ -101,6 +113,9 @@ windows-build)
 	setenv --build NO_PERL NoThanks
 	setenv --build ARTIFACTS_DIRECTORY artifacts
 	;;
+windows-test)
+	setenv --test MAKEFLAGS "$COMMON_MAKEFLAGS"
+	;;
 vs-build)
 	setenv --build NO_PERL NoThanks
 	setenv --build NO_GETTEXT NoThanks
@@ -117,6 +132,7 @@ vs-build)
 	;;
 vs-test)
 	setenv --test NO_SVN_TESTS YesPlease
+	setenv --test MAKEFLAGS "$COMMON_MAKEFLAGS"
 	;;
 linux-gcc)
 	setenv --test GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME main
@@ -162,4 +178,4 @@ linux-leaks)
 	;;
 esac
 
-setenv --all MAKEFLAGS "$MAKEFLAGS CC=${CC:-cc}"
+setenv --build MAKEFLAGS "$MAKEFLAGS CC=${CC:-cc}"
