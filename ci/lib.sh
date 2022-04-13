@@ -1,160 +1,165 @@
-# Library of functions shared by all CI scripts
+#!/bin/sh
+set -e
 
-skip_branch_tip_with_tag () {
-	# Sometimes, a branch is pushed at the same time the tag that points
-	# at the same commit as the tip of the branch is pushed, and building
-	# both at the same time is a waste.
-	#
-	# When the build is triggered by a push to a tag, $CI_BRANCH will
-	# have that tagname, e.g. v2.14.0.  Let's see if $CI_BRANCH is
-	# exactly at a tag, and if so, if it is different from $CI_BRANCH.
-	# That way, we can tell if we are building the tip of a branch that
-	# is tagged and we can skip the build because we won't be skipping a
-	# build of a tag.
+#  Usage
+CI_TYPE_HELP_COMMANDS='
+	# run "make all test" like the "linux-leaks" job
+	(eval $(jobname=linux-leaks ci/lib.sh --all) && make test)
 
-	if TAG=$(git describe --exact-match "$CI_BRANCH" 2>/dev/null) &&
-		test "$TAG" != "$CI_BRANCH"
-	then
-		echo "$(tput setaf 2)Tip of $CI_BRANCH is exactly at $TAG$(tput sgr0)"
-		exit 0
-	fi
-}
+	# run "make all test" like the "linux-musl" job
+	(eval $(jobname=linux-musl ci/lib.sh --all) && make test)
 
-# Save some info about the current commit's tree, so we can skip the build
-# job if we encounter the same tree again and can provide a useful info
-# message.
-save_good_tree () {
-	echo "$(git rev-parse $CI_COMMIT^{tree}) $CI_COMMIT $CI_JOB_NUMBER $CI_JOB_ID" >>"$good_trees_file"
-	# limit the file size
-	tail -1000 "$good_trees_file" >"$good_trees_file".tmp
-	mv "$good_trees_file".tmp "$good_trees_file"
-}
+	# run "make test" like the "linux-TEST-vars" job (uses various GIT_TEST_* modes)
+	make && (eval $(jobname=linux-TEST-vars ci/lib.sh --test) && make test)
 
-# Skip the build job if the same tree has already been built and tested
-# successfully before (e.g. because the branch got rebased, changing only
-# the commit messages).
-skip_good_tree () {
-	if test true = "$GITHUB_ACTIONS"
-	then
-		return
-	fi
+	# run "make test" like the "linux-sha256" job
+	make && (eval $(jobname=linux-sha256 ci/lib.sh --test) && make test)
+'
 
-	if ! good_tree_info="$(grep "^$(git rev-parse $CI_COMMIT^{tree}) " "$good_trees_file")"
-	then
-		# Haven't seen this tree yet, or no cached good trees file yet.
-		# Continue the build job.
-		return
-	fi
+CI_TYPE_HELP="
+running $0 outside of CI? You can use ci/lib.sh to set up your
+environment like a given CI job. E.g.:
+$CI_TYPE_HELP_COMMANDS
 
-	echo "$good_tree_info" | {
-		read tree prev_good_commit prev_good_job_number prev_good_job_id
+note that some of these (e.g. the linux-musl one) may not work as
+expected due to the CI job configuring a platform that may not match
+yours."
 
-		if test "$CI_JOB_ID" = "$prev_good_job_id"
-		then
-			cat <<-EOF
-			$(tput setaf 2)Skipping build job for commit $CI_COMMIT.$(tput sgr0)
-			This commit has already been built and tested successfully by this build job.
-			To force a re-build delete the branch's cache and then hit 'Restart job'.
-			EOF
-		else
-			cat <<-EOF
-			$(tput setaf 2)Skipping build job for commit $CI_COMMIT.$(tput sgr0)
-			This commit's tree has already been built and tested successfully in build job $prev_good_job_number for commit $prev_good_commit.
-			The log of that build job is available at $SYSTEM_TASKDEFINITIONSURI$SYSTEM_TEAMPROJECT/_build/results?buildId=$prev_good_job_id
-			To force a re-build delete the branch's cache and then hit 'Restart job'.
-			EOF
-		fi
-	}
+# Helper libraries
+. ${0%/*}/lib-ci-type.sh
 
-	exit 0
-}
-
-check_unignored_build_artifacts ()
-{
-	! git ls-files --other --exclude-standard --error-unmatch \
-		-- ':/*' 2>/dev/null ||
-	{
-		echo "$(tput setaf 1)error: found unignored build artifacts$(tput sgr0)"
-		false
-	}
-}
-
-# GitHub Action doesn't set TERM, which is required by tput
-export TERM=${TERM:-dumb}
-
-# Clear MAKEFLAGS that may come from the outside world.
-export MAKEFLAGS=
-
-# Set 'exit on error' for all CI scripts to let the caller know that
-# something went wrong.
-# Set tracing executed commands, primarily setting environment variables
-# and installing dependencies.
-set -ex
-
-if test -n "$SYSTEM_COLLECTIONURI" || test -n "$SYSTEM_TASKDEFINITIONSURI"
+# Starting assertions
+mode=$1
+if test -z "$mode"
 then
-	CI_TYPE=azure-pipelines
-	# We are running in Azure Pipelines
-	CI_BRANCH="$BUILD_SOURCEBRANCH"
-	CI_COMMIT="$BUILD_SOURCEVERSION"
-	CI_JOB_ID="$BUILD_BUILDID"
-	CI_JOB_NUMBER="$BUILD_BUILDNUMBER"
-	CI_OS_NAME="$(echo "$AGENT_OS" | tr A-Z a-z)"
-	test darwin != "$CI_OS_NAME" || CI_OS_NAME=osx
-	CI_REPO_SLUG="$(expr "$BUILD_REPOSITORY_URI" : '.*/\([^/]*/[^/]*\)$')"
-	CC="${CC:-gcc}"
-
-	# use a subdirectory of the cache dir (because the file share is shared
-	# among *all* phases)
-	cache_dir="$HOME/test-cache/$SYSTEM_PHASENAME"
-
-	export GIT_PROVE_OPTS="--timer --jobs 10 --state=failed,slow,save"
-	export GIT_TEST_OPTS="--verbose-log -x --write-junit-xml"
-	MAKEFLAGS="$MAKEFLAGS --jobs=10"
-	test windows_nt != "$CI_OS_NAME" ||
-	GIT_TEST_OPTS="--no-chain-lint --no-bin-wrappers $GIT_TEST_OPTS"
-elif test true = "$GITHUB_ACTIONS"
-then
-	CI_TYPE=github-actions
-	CI_BRANCH="$GITHUB_REF"
-	CI_COMMIT="$GITHUB_SHA"
-	CI_OS_NAME="$(echo "$RUNNER_OS" | tr A-Z a-z)"
-	test macos != "$CI_OS_NAME" || CI_OS_NAME=osx
-	CI_REPO_SLUG="$GITHUB_REPOSITORY"
-	CI_JOB_ID="$GITHUB_RUN_ID"
-	CC="${CC:-gcc}"
-	DONT_SKIP_TAGS=t
-
-	cache_dir="$HOME/none"
-
-	export GIT_PROVE_OPTS="--timer --jobs 10"
-	export GIT_TEST_OPTS="--verbose-log -x"
-	MAKEFLAGS="$MAKEFLAGS --jobs=10"
-	test windows != "$CI_OS_NAME" ||
-	GIT_TEST_OPTS="--no-chain-lint --no-bin-wrappers $GIT_TEST_OPTS"
-else
-	echo "Could not identify CI type" >&2
-	env >&2
+	echo "need a $0 mode, e.g. --build or --test" >&2
+	if test -z "$CI_TYPE"
+	then
+		echo "$CI_TYPE_HELP" >&2
+	fi
 	exit 1
 fi
 
-good_trees_file="$cache_dir/good-trees"
-
-mkdir -p "$cache_dir"
-
-test -n "${DONT_SKIP_TAGS-}" ||
-skip_branch_tip_with_tag
-skip_good_tree
-
 if test -z "$jobname"
 then
-	jobname="$CI_OS_NAME-$CC"
+	echo "must set a CI jobname in the environment" >&2
+	exit 1
 fi
 
-export DEVELOPER=1
-export DEFAULT_TEST_TARGET=prove
-export GIT_TEST_CLONE_2GB=true
-export SKIP_DASHED_BUILT_INS=YesPlease
+# Show our configuration
+echo "CONFIG: CI_TYPE=$CI_TYPE" >&2
+echo "CONFIG: jobname=$jobname" >&2
+echo "CONFIG: runs_on_pool=$runs_on_pool" >&2
+echo "CONFIG: GITHUB_ENV=$GITHUB_ENV" >&2
+if test -n "$GITHUB_ENV"
+then
+	echo "CONFIG: GITHUB_ENV=$GITHUB_ENV" >&2
+fi
+
+# Helper functions
+setenv () {
+	local skip=
+	while test $# != 0
+	do
+		case "$1" in
+		--build | --test)
+			if test "$1" != "$mode" && test "$mode" != "--all"
+			then
+				skip=t
+			fi
+
+			;;
+		-*)
+			echo "BUG: bad setenv() option '$1'" >&2
+			exit 1
+			;;
+		*)
+			break
+			;;
+		esac
+		shift
+	done
+
+	key=$1
+	val=$2
+	shift 2
+
+	if test -n "$skip"
+	then
+		echo "SKIP '$key=$val'" >&2
+		return 0
+	fi
+
+	if test -n "$GITHUB_ENV"
+	then
+		echo "$key=$val" >>"$GITHUB_ENV"
+	elif test -z "$CI_TYPE"
+	then
+		echo "$key=\"$val\""
+		echo "export $key"
+	fi
+
+	echo "SET: '$key=$val'" >&2
+}
+
+# Clear variables that may come from the outside world.
+CC=
+CC_PACKAGE=
+
+# How many jobs to run in parallel?
+NPROC=10
+case "$CI_TYPE" in
+'')
+	if command -v nproc >/dev/null
+	then
+		NPROC=$(nproc)
+	else
+		NPROC=1
+	fi
+
+	if test -n "$MAKEFLAGS"
+	then
+		COMMON_MAKEFLAGS="$MAKEFLAGS"
+	else
+		COMMON_MAKEFLAGS=--jobs=$NPROC
+	fi
+	;;
+*)
+	# For "--test" we carry the MAKEFLAGS over from earlier steps, except
+	# in stand-alone jobs which will use $COMMON_MAKEFLAGS.
+	COMMON_MAKEFLAGS=--jobs=$NPROC
+	;;
+esac
+
+
+# Clear MAKEFLAGS that may come from the outside world.
+MAKEFLAGS=$COMMON_MAKEFLAGS
+
+# Use common options for "make" (cmake in "vs-build" below uses the
+# intermediate variables directly)
+DEVELOPER=1
+MAKEFLAGS="$MAKEFLAGS DEVELOPER=$DEVELOPER"
+SKIP_DASHED_BUILT_INS=YesPlease
+MAKEFLAGS="$MAKEFLAGS SKIP_DASHED_BUILT_INS=$SKIP_DASHED_BUILT_INS"
+
+case "$CI_TYPE" in
+github-actions)
+	setenv --test GIT_PROVE_OPTS "--timer --jobs $NPROC"
+	GIT_TEST_OPTS="--verbose-log -x"
+	test Windows != "$RUNNER_OS" ||
+	GIT_TEST_OPTS="--no-chain-lint --no-bin-wrappers $GIT_TEST_OPTS"
+	setenv --test GIT_TEST_OPTS "$GIT_TEST_OPTS"
+	;;
+'')
+	;;
+*)
+	echo "Unhandled CI type: $CI_TYPE" >&2
+	exit 1
+	;;
+esac
+
+setenv --test DEFAULT_TEST_TARGET prove
+setenv --test GIT_TEST_CLONE_2GB true
 
 case "$runs_on_pool" in
 ubuntu-latest)
@@ -163,38 +168,94 @@ ubuntu-latest)
 		break
 	fi
 
-	if [ "$jobname" = linux-gcc ]
+	if test "$jobname" = linux-gcc
 	then
 		MAKEFLAGS="$MAKEFLAGS PYTHON_PATH=/usr/bin/python3"
 	else
 		MAKEFLAGS="$MAKEFLAGS PYTHON_PATH=/usr/bin/python2"
 	fi
 
-	export GIT_TEST_HTTPD=true
-
-	# The Linux build installs the defined dependency versions below.
-	# The OS X build installs much more recent versions, whichever
-	# were recorded in the Homebrew database upon creating the OS X
-	# image.
-	# Keep that in mind when you encounter a broken OS X build!
-	export LINUX_P4_VERSION="16.2"
-	export LINUX_GIT_LFS_VERSION="1.5.2"
-
-	P4_PATH="$HOME/custom/p4"
-	GIT_LFS_PATH="$HOME/custom/git-lfs"
-	export PATH="$GIT_LFS_PATH:$P4_PATH:$PATH"
-	;;
-macos-latest)
-	if [ "$jobname" = osx-gcc ]
-	then
-		MAKEFLAGS="$MAKEFLAGS PYTHON_PATH=$(which python3)"
-	else
-		MAKEFLAGS="$MAKEFLAGS PYTHON_PATH=$(which python2)"
-	fi
+	setenv --test GIT_TEST_HTTPD true
 	;;
 esac
 
 case "$jobname" in
+windows-build)
+	setenv --build NO_PERL NoThanks
+	setenv --build ARTIFACTS_DIRECTORY artifacts
+	;;
+windows-test)
+	setenv --test MAKEFLAGS "$COMMON_MAKEFLAGS"
+	;;
+vs-build)
+	setenv --build DEVELOPER $DEVELOPER
+	setenv --build SKIP_DASHED_BUILT_INS $SKIP_DASHED_BUILT_INS
+
+	setenv --build NO_PERL NoThanks
+	setenv --build NO_GETTEXT NoThanks
+	setenv --build ARTIFACTS_DIRECTORY artifacts
+	setenv --build INCLUDE_DLLS_IN_ARTIFACTS YesPlease
+	setenv --build MSVC YesPlease
+
+	setenv --build GIT_CONFIG_COUNT 2
+	setenv --build GIT_CONFIG_KEY_0 user.name
+	setenv --build GIT_CONFIG_VALUE_0 CI
+	setenv --build GIT_CONFIG_KEY_1 user.emailname
+	setenv --build GIT_CONFIG_VALUE_1 ci@git
+	setenv --build GIT_CONFIG_VALUE_1 ci@git
+	;;
+vs-test)
+	setenv --test NO_SVN_TESTS YesPlease
+	setenv --test MAKEFLAGS "$COMMON_MAKEFLAGS"
+	;;
+linux-gcc)
+	CC=gcc
+	CC_PACKAGE=gcc-8
+	setenv --test GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME main
+	;;
+linux-gcc-default)
+	CC=gcc
+	;;
+linux-TEST-vars)
+	CC=gcc
+	CC_PACKAGE=gcc-8
+	setenv --test GIT_TEST_SPLIT_INDEX yes
+	setenv --test GIT_TEST_MERGE_ALGORITHM recursive
+	setenv --test GIT_TEST_FULL_IN_PACK_ARRAY true
+	setenv --test GIT_TEST_OE_SIZE 10
+	setenv --test GIT_TEST_OE_DELTA_SIZE 5
+	setenv --test GIT_TEST_COMMIT_GRAPH 1
+	setenv --test GIT_TEST_COMMIT_GRAPH_CHANGED_PATHS 1
+	setenv --test GIT_TEST_MULTI_PACK_INDEX 1
+	setenv --test GIT_TEST_MULTI_PACK_INDEX_WRITE_BITMAP 1
+	setenv --test GIT_TEST_ADD_I_USE_BUILTIN 1
+	setenv --test GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME master
+	setenv --test GIT_TEST_WRITE_REV_INDEX 1
+	setenv --test GIT_TEST_CHECKOUT_WORKERS 2
+	;;
+osx-gcc)
+	MAKEFLAGS="$MAKEFLAGS PYTHON_PATH=$(which python3)"
+	CC=gcc
+	CC_PACKAGE=gcc-9
+	;;
+osx-clang)
+	MAKEFLAGS="$MAKEFLAGS PYTHON_PATH=$(which python2)"
+	CC=clang
+	;;
+linux-clang)
+	CC=clang
+	setenv --test GIT_TEST_DEFAULT_HASH sha1
+	;;
+linux-sha256)
+	CC=clang
+	setenv --test GIT_TEST_DEFAULT_HASH sha256
+	;;
+pedantic)
+	CC=gcc
+	# Don't run the tests; we only care about whether Git can be
+	# built.
+	setenv --build DEVOPTS pedantic
+	;;
 linux32)
 	CC=gcc
 	;;
@@ -205,9 +266,11 @@ linux-musl)
 	MAKEFLAGS="$MAKEFLAGS GIT_TEST_UTF8_LOCALE=C.UTF-8"
 	;;
 linux-leaks)
-	export SANITIZE=leak
-	export GIT_TEST_PASSING_SANITIZE_LEAK=true
+	CC=gcc
+	MAKEFLAGS="$MAKEFLAGS SANITIZE=leak"
+	setenv --test GIT_TEST_PASSING_SANITIZE_LEAK true
 	;;
 esac
 
-MAKEFLAGS="$MAKEFLAGS CC=${CC:-cc}"
+MAKEFLAGS="$MAKEFLAGS${CC:+ CC=$CC}"
+setenv --build MAKEFLAGS "$MAKEFLAGS"
