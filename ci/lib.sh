@@ -1,5 +1,5 @@
 #!/bin/sh
-set -ex
+set -e
 
 # Helper libraries
 . ${0%/*}/lib-ci-type.sh
@@ -18,15 +18,26 @@ then
 	exit 1
 fi
 
+# Show our configuration
+echo "CONFIG: CI_TYPE=$CI_TYPE" >&2
+echo "CONFIG: jobname=$jobname" >&2
+echo "CONFIG: runs_on_pool=$runs_on_pool" >&2
+echo "CONFIG: GITHUB_ENV=$GITHUB_ENV" >&2
+if test -n "$GITHUB_ENV"
+then
+	echo "CONFIG: GITHUB_ENV=$GITHUB_ENV" >&2
+fi
+
 # Helper functions
 setenv () {
+	local skip=
 	while test $# != 0
 	do
 		case "$1" in
 		--build | --test)
 			if test "$1" != "$mode"
 			then
-				return 0
+				skip=t
 			fi
 
 			;;
@@ -45,10 +56,18 @@ setenv () {
 	val=$2
 	shift 2
 
+	if test -n "$skip"
+	then
+		echo "SKIP '$key=$val'" >&2
+		return 0
+	fi
+
 	if test -n "$GITHUB_ENV"
 	then
 		echo "$key=$val" >>"$GITHUB_ENV"
 	fi
+
+	echo "SET: '$key=$val'" >&2
 }
 
 # Clear variables that may come from the outside world.
